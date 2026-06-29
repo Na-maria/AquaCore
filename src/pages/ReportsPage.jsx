@@ -1,8 +1,22 @@
+import { useEffect, useState } from 'react';
 import { FileText, Download, Calendar } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import { REPORTS } from '../data/mockData';
+import { fetchReports } from '../api/client';
 
 export default function ReportsPage() {
+  const [reports, setReports] = useState(REPORTS);
+
+  useEffect(() => {
+    fetchReports()
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setReports(data);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   return (
     <div className="page">
       <PageHeader eyebrow="Documentação" title="Relatórios" />
@@ -13,7 +27,7 @@ export default function ReportsPage() {
         </div>
 
         <ul className="reports-list">
-          {REPORTS.map((report) => (
+          {reports.map((report) => (
             <li key={report.id} className="report-row">
               <div className="report-icon">
                 <FileText size={18} />

@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react';
 import { Server, Thermometer, Droplet, Cpu } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import { SERVERS_DETAIL } from '../data/mockData';
+import { fetchServerDetails } from '../api/client';
 
 const STATUS_LABELS = {
   critical: 'Crítico',
@@ -9,12 +11,24 @@ const STATUS_LABELS = {
 };
 
 export default function ServersPage() {
+  const [servers, setServers] = useState(SERVERS_DETAIL);
+
+  useEffect(() => {
+    fetchServerDetails()
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setServers(data);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   return (
     <div className="page">
       <PageHeader eyebrow="Infraestrutura" title="Servidores monitorados" />
 
       <section className="servers-grid">
-        {SERVERS_DETAIL.map((server) => (
+        {servers.map((server) => (
           <div key={server.name} className="server-card">
             <div className="server-card-header">
               <div className="server-card-title">

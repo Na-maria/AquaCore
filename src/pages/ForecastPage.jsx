@@ -8,11 +8,29 @@ import {
   Tooltip,
   Legend,
 } from 'recharts';
+import { useEffect, useState } from 'react';
 import { BrainCircuit, TrendingUp, Target, Database } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import { FORECAST_SERIES, MODEL_INFO } from '../data/mockData';
+import { fetchForecastData } from '../api/client';
 
 export default function ForecastPage() {
+  const [modelInfo, setModelInfo] = useState(MODEL_INFO);
+  const [forecastSeries, setForecastSeries] = useState(FORECAST_SERIES);
+  const [explanation, setExplanation] = useState(
+    'O modelo usa uma base local em SQLite com dados sintéticos parametrizados a partir de temperatura, carga de CPU, eficiência de resfriamento e consumo hídrico estimado por servidor. A API recalcula a previsão para apoiar decisões preventivas de resfriamento e distribuição de carga.'
+  );
+
+  useEffect(() => {
+    fetchForecastData()
+      .then((data) => {
+        setModelInfo(data.modelInfo);
+        setForecastSeries(data.forecastSeries);
+        setExplanation(data.explanation);
+      })
+      .catch(() => {});
+  }, []);
+
   return (
     <div className="page">
       <PageHeader
@@ -26,7 +44,7 @@ export default function ForecastPage() {
             <div className="metric-icon"><Target size={20} /></div>
           </div>
           <p className="metric-label">Acurácia do modelo</p>
-          <p className="metric-value">{MODEL_INFO.accuracy}<span className="metric-unit">%</span></p>
+          <p className="metric-value">{modelInfo.accuracy}<span className="metric-unit">%</span></p>
           <p className="metric-delta"><span className="metric-delta-label">últimos 30 dias</span></p>
         </div>
 
@@ -35,7 +53,7 @@ export default function ForecastPage() {
             <div className="metric-icon"><TrendingUp size={20} /></div>
           </div>
           <p className="metric-label">Erro médio (MAE)</p>
-          <p className="metric-value">{MODEL_INFO.mae}<span className="metric-unit">k L</span></p>
+          <p className="metric-value">{modelInfo.mae}<span className="metric-unit">k L</span></p>
           <p className="metric-delta"><span className="metric-delta-label">por janela de 2h</span></p>
         </div>
 
@@ -44,7 +62,7 @@ export default function ForecastPage() {
             <div className="metric-icon"><Database size={20} /></div>
           </div>
           <p className="metric-label">Amostras de treino</p>
-          <p className="metric-value">{MODEL_INFO.samples}<span className="metric-unit">k</span></p>
+          <p className="metric-value">{modelInfo.samples}<span className="metric-unit">k</span></p>
           <p className="metric-delta"><span className="metric-delta-label">registros de sensores</span></p>
         </div>
 
@@ -54,7 +72,7 @@ export default function ForecastPage() {
             <span className="metric-badge">SQLite + API</span>
           </div>
           <p className="metric-label">Última atualização</p>
-          <p className="metric-value" style={{ fontSize: 22 }}>{MODEL_INFO.lastUpdate}</p>
+          <p className="metric-value" style={{ fontSize: 22 }}>{modelInfo.lastUpdate}</p>
           <p className="metric-delta"><span className="metric-delta-label">re-treino automático diário</span></p>
         </div>
       </section>
@@ -65,7 +83,7 @@ export default function ForecastPage() {
           <p>Faixa de confiança da previsão em litros/hora (em milhares)</p>
         </div>
         <ResponsiveContainer width="100%" height={320}>
-          <AreaChart data={FORECAST_SERIES} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
+          <AreaChart data={forecastSeries} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
             <defs>
               <linearGradient id="forecastFill" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#37B1FF" stopOpacity={0.25} />
@@ -89,11 +107,7 @@ export default function ForecastPage() {
           <h3>Como funciona o modelo</h3>
         </div>
         <p className="model-explainer">
-          O modelo usa uma base local em <strong>SQLite</strong> com dados sintéticos parametrizados a partir de
-          temperatura, carga de CPU, eficiência de resfriamento e consumo hídrico estimado por servidor. A cada
-          nova janela de leituras, a API recalcula a previsão para as próximas 24 horas, permitindo que a equipe
-          antecipe picos de consumo antes que aconteçam e ajuste o resfriamento ou a distribuição de carga
-          preventivamente. A estrutura foi desenhada para migração futura para cloud.
+          {explanation}
         </p>
       </section>
     </div>

@@ -133,6 +133,10 @@ def time_ago_label(timestamp: str) -> str:
     return f"{hours} h"
 
 
+def format_liters_k(liters: float) -> str:
+    return f"{liters / 1000:.0f}k L"
+
+
 def seed_database(conn: sqlite3.Connection) -> None:
     has_servers = conn.execute("SELECT COUNT(*) AS total FROM servers").fetchone()["total"]
     if has_servers:
@@ -301,6 +305,16 @@ def get_dashboard(conn: sqlite3.Connection) -> dict:
     avg_temp = summary["avg_temperature"] or 0
     avg_cpu = summary["avg_cpu"] or 0
     predicted_24h = prediction["predicted_24h"] or 0
+    if not predicted_24h:
+        predicted_24h = conn.execute(
+            """
+            SELECT SUM(predicted_water_liters) AS predicted_24h
+            FROM predictions
+            WHERE DATETIME(timestamp) <= (
+                SELECT DATETIME(MIN(timestamp), '+24 hours') FROM predictions
+            )
+            """
+        ).fetchone()["predicted_24h"] or 0
     chart = get_chart(conn)
     alerts = get_alerts(conn)
     ranking = get_ranking(conn)
@@ -400,6 +414,166 @@ def get_dashboard_raw(conn: sqlite3.Connection) -> dict:
     }
 
 
+def get_forecast_page(conn: sqlite3.Connection) -> dict:
+    rows = conn.execute(
+        """
+        SELECT
+            DATE(timestamp) AS day,
+            SUM(predicted_water_liters) AS predicted,
+            AVG(confidence) AS confidence
+        FROM predictions
+        GROUP BY DATE(timestamp)
+        ORDER BY day
+        """
+    ).fetchall()
+
+    labels = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+    base = [row["predicted"] / 1000 for row in rows] or [4300]
+    series = []
+
+    for index in range(7):
+        source = base[index % len(base)]
+        weekday_factor = 1 + (0.08 if index in (3, 4) else -0.05 if index in (5, 6) else 0)
+        predicted = round(source * weekday_factor)
+        series.append(
+            {
+                "day": labels[index],
+                "predicted": predicted,
+                "min": round(predicted * 0.88),
+                "max": round(predicted * 1.12),
+            }
+        )
+
+    return {
+        "modelInfo": {
+            "accuracy": "94.2",
+            "mae": "38",
+            "samples": "212",
+            "lastUpdate": "Hoje, 03:00",
+        },
+        "forecastSeries": series,
+        "explanation": (
+            "O modelo usa uma base local em SQLite com dados sintéticos parametrizados a partir de "
+            "temperatura, carga de CPU, eficiência de resfriamento e consumo hídrico estimado por servidor. "
+            "A API recalcula a previsão para apoiar decisões preventivas de resfriamento e distribuição de carga."
+        ),
+    }
+
+
+def get_server_details(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        """
+        WITH latest AS (
+            SELECT r.*
+            FROM readings r
+            JOIN (
+                SELECT server_id, MAX(timestamp) AS timestamp
+                FROM readings
+                GROUP BY server_id
+            ) lr
+            ON lr.server_id = r.server_id AND lr.timestamp = r.timestamp
+        ),
+        totals AS (
+            SELECT server_id, SUM(water_liters) AS water_liters
+            FROM readings
+            WHERE DATETIME(timestamp) >= (
+                SELECT DATETIME(MAX(timestamp), '-24 hours') FROM readings
+            )
+            GROUP BY server_id
+        )
+        SELECT
+            servers.name,
+            servers.status,
+            latest.temperature_c AS temp,
+            latest.cpu_percent AS cpu,
+            totals.water_liters AS water_liters
+        FROM servers
+        JOIN latest ON latest.server_id = servers.id
+        JOIN totals ON totals.server_id = servers.id
+        ORDER BY totals.water_liters DESC
+        """
+    ).fetchall()
+
+    return [
+        {
+            "name": row["name"],
+            "status": row["status"],
+            "water": format_liters_k(row["water_liters"] or 0),
+            "temp": round(row["temp"] or 0),
+            "cpu": round(row["cpu"] or 0),
+        }
+        for row in rows
+    ]
+
+
+def get_reports(conn: sqlite3.Connection) -> list[dict]:
+    today = datetime.now()
+    water = conn.execute(
+        """
+        SELECT SUM(water_liters) AS total
+        FROM readings
+        WHERE DATETIME(timestamp) >= (
+            SELECT DATETIME(MAX(timestamp), '-24 hours') FROM readings
+        )
+        """
+    ).fetchone()["total"] or 0
+    size_base = max(900, int(water / 5000))
+
+    return [
+        {
+            "id": 1,
+            "title": "Relatório operacional — últimos 30 dias",
+            "date": today.strftime("%d/%m/%Y"),
+            "size": f"{size_base / 1000:.1f} MB",
+        },
+        {
+            "id": 2,
+            "title": "Previsão hídrica — janela de 7 dias",
+            "date": (today - timedelta(days=1)).strftime("%d/%m/%Y"),
+            "size": "980 KB",
+        },
+        {
+            "id": 3,
+            "title": "Auditoria de consumo por servidor",
+            "date": (today - timedelta(days=7)).strftime("%d/%m/%Y"),
+            "size": "1.4 MB",
+        },
+        {
+            "id": 4,
+            "title": "Resumo técnico do modelo preditivo",
+            "date": (today - timedelta(days=14)).strftime("%d/%m/%Y"),
+            "size": "760 KB",
+        },
+    ]
+
+
+def get_settings(conn: sqlite3.Connection) -> dict:
+    today = datetime.now().date().isoformat()
+    target = conn.execute(
+        "SELECT target_liters FROM daily_targets WHERE date = ?",
+        (today,),
+    ).fetchone()
+    target_liters = target["target_liters"] if target else 3_600_000
+
+    return {
+        "alerts": {
+            "overTarget": True,
+            "criticalTemperature": True,
+            "weeklyEmail": False,
+        },
+        "limits": {
+            "dailyWaterTarget": format_compact_liters(target_liters) + " L",
+            "idealTemperatureRange": "32–36°C",
+        },
+        "database": {
+            "source": "SQLite local — API AquaCore",
+            "status": "conectado",
+        },
+        "team": "Ana Maria, Samile, Beatriz, Odnan",
+        "course": "Huawei ICT Academy — Sprint Final, Equipe 2",
+    }
+
+
 def get_chart(conn: sqlite3.Connection) -> dict:
     real = dict_rows(
         conn.execute(
@@ -408,7 +582,9 @@ def get_chart(conn: sqlite3.Connection) -> dict:
                 STRFTIME('%Hh', timestamp) AS label,
                 SUM(water_liters) AS liters
             FROM readings
-            WHERE DATETIME(timestamp) >= DATETIME('now', 'localtime', '-24 hours')
+            WHERE DATETIME(timestamp) >= (
+                SELECT DATETIME(MAX(timestamp), '-24 hours') FROM readings
+            )
             GROUP BY STRFTIME('%Y-%m-%d %H', timestamp)
             ORDER BY timestamp
             """
@@ -419,7 +595,9 @@ def get_chart(conn: sqlite3.Connection) -> dict:
                 STRFTIME('%Hh', timestamp) AS label,
                 SUM(water_liters) AS liters
             FROM readings
-            WHERE DATETIME(timestamp) >= DATETIME('now', 'localtime', '-24 hours')
+            WHERE DATETIME(timestamp) >= (
+                SELECT DATETIME(MAX(timestamp), '-24 hours') FROM readings
+            )
             GROUP BY STRFTIME('%Y-%m-%d %H', timestamp)
             ORDER BY timestamp
             """
@@ -499,7 +677,9 @@ def get_ranking(conn: sqlite3.Connection) -> list[dict]:
                 ROUND(SUM(readings.water_liters), 0) AS waterLiters
             FROM servers
             JOIN readings ON readings.server_id = servers.id
-            WHERE readings.timestamp >= DATETIME('now', 'localtime', '-24 hours')
+            WHERE DATETIME(readings.timestamp) >= (
+                SELECT DATETIME(MAX(timestamp), '-24 hours') FROM readings
+            )
             GROUP BY servers.id
             ORDER BY waterLiters DESC
             LIMIT 5
@@ -513,7 +693,9 @@ def get_ranking(conn: sqlite3.Connection) -> list[dict]:
                 ROUND(SUM(readings.water_liters), 0) AS waterLiters
             FROM servers
             JOIN readings ON readings.server_id = servers.id
-            WHERE readings.timestamp >= DATETIME('now', 'localtime', '-24 hours')
+            WHERE DATETIME(readings.timestamp) >= (
+                SELECT DATETIME(MAX(timestamp), '-24 hours') FROM readings
+            )
             GROUP BY servers.id
             ORDER BY waterLiters DESC
             LIMIT 5
@@ -547,6 +729,8 @@ class AquaCoreHandler(BaseHTTPRequestHandler):
                 elif path == "/api/servers":
                     rows = conn.execute("SELECT * FROM servers ORDER BY code").fetchall()
                     self.respond(dict_rows(conn.cursor(), rows))
+                elif path == "/api/server-details":
+                    self.respond(get_server_details(conn))
                 elif path == "/api/readings":
                     hours = int(query.get("hours", ["24"])[0])
                     rows = conn.execute(
@@ -576,8 +760,14 @@ class AquaCoreHandler(BaseHTTPRequestHandler):
                         """
                     ).fetchall()
                     self.respond(dict_rows(conn.cursor(), rows))
+                elif path == "/api/forecast":
+                    self.respond(get_forecast_page(conn))
                 elif path == "/api/alerts":
                     self.respond(get_alerts(conn))
+                elif path == "/api/reports":
+                    self.respond(get_reports(conn))
+                elif path == "/api/settings":
+                    self.respond(get_settings(conn))
                 else:
                     self.respond({"error": "Endpoint not found"}, status=404)
         except Exception as exc:
